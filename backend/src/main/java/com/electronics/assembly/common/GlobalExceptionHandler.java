@@ -51,6 +51,14 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * 工单 / 工序行锁等待超时：409，前端可直接重试（服务端通常已自动重试）
+     */
+    @ExceptionHandler(LockTimeoutException.class)
+    public ResponseEntity<ApiResponse<Void>> handleLockTimeout(LockTimeoutException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.fail(e.getMessage()));
+    }
+
+    /**
      * 兜底：500
      */
     @ExceptionHandler(Exception.class)

@@ -60,29 +60,47 @@ CREATE TABLE bom_item (
 
 -- ---------------- SMT 工序流转 ----------------
 CREATE TABLE smt_step (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    order_id    BIGINT      NOT NULL,
-    step_name   VARCHAR(16) NOT NULL COMMENT '上料/贴片/回流焊/AOI/目检',
-    status      VARCHAR(16) NOT NULL COMMENT '待执行/进行中/已完成',
-    operator    VARCHAR(32),
-    started_at  DATETIME,
-    finished_at DATETIME,
-    CONSTRAINT fk_step_order FOREIGN KEY (order_id) REFERENCES work_order (id)
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id     BIGINT      NOT NULL,
+    step_name    VARCHAR(16) NOT NULL COMMENT '上料/贴片/回流焊/AOI/目检',
+    status       VARCHAR(16) NOT NULL COMMENT '待执行/进行中/返修中/已完成',
+    operator     VARCHAR(32),
+    started_at   DATETIME,
+    finished_at  DATETIME,
+    repair_round INT         NOT NULL DEFAULT 0 COMMENT '当前返修轮次，0 = 未发生返修',
+    CONSTRAINT fk_step_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    -- 一道工序在一张工单里只允许一条游标记录，返修期间重复质检也不会产生重复游标
+    UNIQUE KEY uk_step_order_step (order_id, step_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 质检与返修 ----------------
 CREATE TABLE inspection (
-    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
-    order_id      BIGINT      NOT NULL,
-    step_name     VARCHAR(16) NOT NULL,
-    defect_type   VARCHAR(16) NOT NULL COMMENT '少件/偏移/虚焊/连锡/反向',
-    defect_points INT         NOT NULL DEFAULT 0 COMMENT '不良点数，超过 12 判废',
-    sample_qty    INT         NOT NULL DEFAULT 0 COMMENT '抽检板数',
-    verdict       VARCHAR(16) NOT NULL COMMENT '合格/返修/判废',
-    inspector     VARCHAR(32),
-    repair_done   TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '返修是否闭环',
-    checked_at    DATETIME,
-    CONSTRAINT fk_insp_order FOREIGN KEY (order_id) REFERENCES work_order (id)
+    id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id       BIGINT      NOT NULL,
+    step_name      VARCHAR(16) NOT NULL,
+    defect_type    VARCHAR(16) NOT NULL COMMENT '少件/偏移/虚焊/连锡/反向',
+    defect_points  INT         NOT NULL DEFAULT 0 COMMENT '不良点数，超过 12 判废',
+    sample_qty     INT         NOT NULL DEFAULT 0 COMMENT '抽检板数',
+    verdict        VARCHAR(16) NOT NULL COMMENT '合格/返修/判废',
+    inspector      VARCHAR(32),
+    repair_done    TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '返修是否闭环（旧字段，保留兼容）',
+    checked_at     DATETIME,
+    repair_round   INT         NOT NULL DEFAULT 0 COMMENT '返修轮次，返修记录从 1 递增；合格/判废为 0',
+    repair_status  VARCHAR(16) NOT NULL DEFAULT '无' COMMENT '无/返修中/待复验/复验不合格/已闭环',
+    repaired_by    VARCHAR(32) COMMENT '完成返修的操作员',
+    repaired_at    DATETIME     COMMENT '返修完成时间',
+    reinspected_by VARCHAR(32) COMMENT '复验质检员',
+    reinspected_at DATETIME     COMMENT '复验时间',
+    reinspect_note VARCHAR(255) COMMENT '复验备注（不通过必填）',
+    -- 幂等占位：返修记录等于 CONCAT(order_id,'-',step_name,'-',repair_round)，其余为 NULL。
+    -- 配合唯一索引，同一工单同一工序同一轮次最多一条返修质检记录，
+    -- 重复点击 / 网络重试 / 并发提交在数据库层面也不会产生两条返修任务。
+    repair_uk      VARCHAR(64) GENERATED ALWAYS AS (
+                       IF(verdict = '返修' AND repair_round > 0,
+                          CONCAT(order_id, '-', step_name, '-', repair_round), NULL)
+                   ) STORED COMMENT '返修记录幂等占位',
+    CONSTRAINT fk_insp_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    UNIQUE KEY uk_insp_repair_round (repair_uk)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 工单当前产线配置（换线比对基准 + 并发锁定点） ----------------
@@ -172,25 +190,32 @@ INSERT INTO bom_item (product_model, part_no, unit_qty) VALUES
 ('MODEL-C', 'RC-0402-10K',   4);
 
 -- 工序：WO-2026003（贴片中）五道工序都在推进；WO-2026001 尚未开工
-INSERT INTO smt_step (order_id, step_name, status, operator, started_at, finished_at) VALUES
-(3, '上料',   '已完成', '王强', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 20 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 19 HOUR),
-(3, '贴片',   '进行中', '李敏', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 18 HOUR, NULL),
-(3, '回流焊', '待执行', NULL,   NULL, NULL),
-(3, 'AOI',    '待执行', NULL,   NULL, NULL),
-(3, '目检',   '待执行', NULL,   NULL, NULL),
-(5, '上料',   '已完成', '王强', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 30 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 29 HOUR),
-(5, '贴片',   '已完成', '李敏', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 28 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 26 HOUR),
-(5, '回流焊', '已完成', '赵磊', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 25 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 24 HOUR),
-(5, 'AOI',    '已完成', '孙悦', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 23 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 22 HOUR),
-(5, '目检',   '待执行', NULL,   NULL, NULL);
+INSERT INTO smt_step (order_id, step_name, status, operator, started_at, finished_at, repair_round) VALUES
+(3, '上料',   '已完成', '王强', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 20 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 19 HOUR, 0),
+(3, '贴片',   '进行中', '李敏', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 18 HOUR, NULL, 0),
+(3, '回流焊', '待执行', NULL,   NULL, NULL, 0),
+(3, 'AOI',    '待执行', NULL,   NULL, NULL, 0),
+(3, '目检',   '待执行', NULL,   NULL, NULL, 0),
+(5, '上料',   '已完成', '王强', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 30 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 29 HOUR, 0),
+(5, '贴片',   '已完成', '李敏', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 28 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 26 HOUR, 0),
+(5, '回流焊', '已完成', '赵磊', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 25 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 24 HOUR, 0),
+(5, 'AOI',    '已完成', '孙悦', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 23 HOUR, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 22 HOUR, 0),
+-- 目检第 1 轮返修未闭环（与下面第 4 条质检对应），游标停在「返修中」
+(5, '目检',   '返修中', NULL, NULL, NULL, 1);
 
--- 质检：第 2 条不良 15 点已判废；第 4 条不良 5 点判返修且未闭环
-INSERT INTO inspection (order_id, step_name, defect_type, defect_points, sample_qty, verdict, inspector, repair_done, checked_at) VALUES
-(2, 'AOI',  '偏移',  3,  50, '返修', '孙悦', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY),
-(2, 'AOI',  '连锡', 15,  50, '判废', '孙悦', 0, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY),
-(5, 'AOI',  '虚焊',  4,  40, '返修', '孙悦', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR),
-(5, '目检', '少件',  5,  40, '返修', '周涛', 0, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR),
-(3, 'AOI',  '反向',  2,  30, '合格', '孙悦', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR);
+-- 质检：第 2 条不良 15 点已判废；第 1/3 条返修已复验闭环；第 4 条目检返修在修未复验
+INSERT INTO inspection (order_id, step_name, defect_type, defect_points, sample_qty, verdict, inspector, repair_done, checked_at,
+                        repair_round, repair_status, repaired_by, repaired_at) VALUES
+(2, 'AOI',  '偏移',  3,  50, '返修', '孙悦', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY,
+ 1, '已闭环', '王强', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 20 HOUR),
+(2, 'AOI',  '连锡', 15,  50, '判废', '孙悦', 0, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 1 DAY,
+ 0, '无', NULL, NULL),
+(5, 'AOI',  '虚焊',  4,  40, '返修', '孙悦', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 6 HOUR,
+ 1, '已闭环', '王强', UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 5 HOUR),
+(5, '目检', '少件',  5,  40, '返修', '周涛', 0, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 2 HOUR,
+ 1, '返修中', NULL, NULL),
+(3, 'AOI',  '反向',  2,  30, '合格', '孙悦', 1, UTC_TIMESTAMP() + INTERVAL 8 HOUR - INTERVAL 3 HOUR,
+ 0, '无', NULL, NULL);
 
 -- 工单当前产线配置：config_hash = SHA2('设备|飞达|参数', 256)，与后端 Dict.configHash 口径一致
 INSERT INTO order_line_config (order_id, equipment_no, feeder_config, key_params, config_hash, updated_by, updated_at) VALUES

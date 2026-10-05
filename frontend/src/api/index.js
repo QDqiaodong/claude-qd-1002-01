@@ -62,7 +62,10 @@ export default {
   // ---------------- 质检与返修 ----------------
   listInspections: (p) => call(http.get('/inspections', params(p))),
   createInspection: (d) => call(http.post('/inspections', d)),
-  repair: (id) => call(http.post(`/inspections/${id}/repair`)),
+  // 操作员完成返修：返修中 → 待复验（operator 可选，兼容旧调用）
+  repair: (id, operator) => call(http.post(`/inspections/${id}/repair`, null, params({ operator }))),
+  // 质检复验：passed=true 闭环；false 需填 note，自动开启下一轮返修
+  reinspect: (id, d) => call(http.post(`/inspections/${id}/reinspect`, d)),
   openRepairs: () => call(http.get('/inspections/open-repairs')),
   blocking: (orderId) => call(http.get(`/inspections/blocking/${orderId}`))
 }

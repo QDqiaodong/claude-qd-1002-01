@@ -35,18 +35,46 @@ public final class Dict {
     // ---------------- SMT 工序 ----------------
     public static final List<String> STEPS = List.of("上料", "贴片", "回流焊", "AOI", "目检");
 
-    public static final List<String> STEP_STATUSES = List.of("待执行", "进行中", "已完成");
+    /** 待执行 / 进行中 / 返修中 / 已完成（返修中是质检不合格把游标打回后的状态） */
+    public static final List<String> STEP_STATUSES = List.of("待执行", "进行中", "返修中", "已完成");
 
-    private static final Map<String, List<String>> STEP_NEXT = Map.of(
-            "待执行", List.of("进行中"),
-            "进行中", List.of("已完成", "待执行"),
-            "已完成", List.of());
+    private static final Map<String, List<String>> STEP_NEXT = Map.ofEntries(
+            Map.entry("待执行", List.of("进行中")),
+            Map.entry("进行中", List.of("已完成", "待执行", "返修中")),
+            // 返修中只能由质检复验推进到已完成；复验不通过时开新一轮返修，游标保持返修中
+            Map.entry("返修中", List.of("已完成", "返修中")),
+            // 已完成工序再次质检不合格时，游标重新打回返修中
+            Map.entry("已完成", List.of("返修中")));
 
     // ---------------- 质检与返修 ----------------
     public static final List<String> DEFECT_TYPES = List.of("少件", "偏移", "虚焊", "连锡", "反向");
 
     /** 判定结论：合格 / 返修 / 判废 */
     public static final List<String> VERDICTS = List.of("合格", "返修", "判废");
+
+    /** 非返修记录（合格 / 判废）不进入返修闭环 */
+    public static final String REPAIR_NA = "无";
+    /** 返修任务已建立、工序游标停在返修中，等待操作员返修 */
+    public static final String REPAIR_OPEN = "返修中";
+    /** 操作员已完成返修，只能由质检复验决定走向 */
+    public static final String REPAIR_WAITING = "待复验";
+    /** 复验不通过：本轮终结，系统已自动开启下一轮返修（新质检记录） */
+    public static final String REPAIR_REJECTED = "复验不合格";
+    /** 复验通过：返修闭环，对应工序推进到已完成 */
+    public static final String REPAIR_CLOSED = "已闭环";
+
+    /** 返修任务状态机 */
+    public static final List<String> REPAIR_STATUSES =
+            List.of(REPAIR_NA, REPAIR_OPEN, REPAIR_WAITING, REPAIR_REJECTED, REPAIR_CLOSED);
+
+    public static boolean isValidRepairStatus(String status) {
+        return status != null && REPAIR_STATUSES.contains(status);
+    }
+
+    /** 返修任务是否仍未闭环（返修中 / 待复验；复验不合格的旧轮次不算，已有新一轮接棒） */
+    public static boolean isOpenRepairStatus(String status) {
+        return REPAIR_OPEN.equals(status) || REPAIR_WAITING.equals(status);
+    }
 
     // ---------------- 换线首件放行 ----------------
     /** 换线批次状态：待首件 → 待确认 → 已放行 / 已驳回；已失效为旁路终态 */

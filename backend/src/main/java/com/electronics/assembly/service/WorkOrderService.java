@@ -35,15 +35,18 @@ public class WorkOrderService {
     private final BomItemRepository bomRepository;
     private final SmtStepRepository stepRepository;
     private final OrderLineConfigRepository configRepository;
+    private final InspectionService inspectionService;
 
     public WorkOrderService(WorkOrderRepository orderRepository,
                             BomItemRepository bomRepository,
                             SmtStepRepository stepRepository,
-                            OrderLineConfigRepository configRepository) {
+                            OrderLineConfigRepository configRepository,
+                            InspectionService inspectionService) {
         this.orderRepository = orderRepository;
         this.bomRepository = bomRepository;
         this.stepRepository = stepRepository;
         this.configRepository = configRepository;
+        this.inspectionService = inspectionService;
     }
 
     public List<WorkOrder> list(String status, String productModel) {
@@ -225,12 +228,18 @@ public class WorkOrderService {
     /** 状态推进：待投产 → 贴片中 → 待检验 → 已完成 */
     @Transactional
     public WorkOrder transfer(Long id, String target) {
-        WorkOrder order = get(id);
+        // 锁工单行：与质检判返修 / 复验串行化，保证返修放行口径读到的是最新状态
+        WorkOrder order = orderRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new BizException("工单不存在：" + id));
         if (!Dict.isValidOrderStatus(target)) {
             throw new BizException("工单状态不合法：" + target);
         }
         if (!"已取消".equals(target) && !Dict.canTransferOrder(order.getStatus(), target)) {
             throw new BizException("工单只能逐级推进，不允许从「" + order.getStatus() + "」到「" + target + "」");
+        }
+        // 未完成返修不能跳过该工序：待检验 / 已完成前必须没有判废或未闭环返修
+        if ("待检验".equals(target) || "已完成".equals(target)) {
+            inspectionService.assertNoOpenRepair(id);
         }
         if ("已完成".equals(target) && order.getGapQty() > 0) {
             throw new BizException("还欠 " + order.getGapQty() + " 板未完成，不能置为已完成");

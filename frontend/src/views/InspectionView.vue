@@ -1,24 +1,32 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import api from '../api'
 
 // ------------------------------------------------------------------
-// 页面操作范式：缺陷点阵 + 返修闭环勾选。
+// 页面操作范式：缺陷点阵 + 返修闭环。
 // 每条质检记录把「不良点数」画成一格一格的点阵（一点一格），
 // 点阵越铺越满，越过阈值（12 点）整片底色转红并盖上「判废」戳；
-// 结论为「返修」的记录右侧是一个闭环勾选框，勾上才算放行。
-// 新登记质检走顶部一条常驻录入条。
+// 返修记录显示轮次与闭环状态：返修中（操作员「完成返修」）→ 待复验
+// （质检员「复验通过 / 复验不通过」），复验不通过会自动开下一轮返修。
+// 登记 / 返修 / 复验全部走服务端幂等，按钮提交期间禁用，防止重复点击。
 // ------------------------------------------------------------------
 
 const orders = ref([])
 const inspections = ref([])
 const error = ref('')
 const tip = ref('')
+const busy = ref(false)
+const busyId = ref(null)
 const MAX_POINTS = 12
-const form = ref({ orderId: null, stepName: 'AOI', defectType: '偏移', defectPoints: 0, sampleQty: 40, inspector: '孙悦' })
+const form = ref({
+  orderId: null, stepName: 'AOI', defectType: '偏移',
+  defectPoints: 0, sampleQty: 40, inspector: '孙悦',
+  repairOperator: '王强', reinspector: '孙悦'
+})
 const DEFECTS = ['少件', '偏移', '虚焊', '连锡', '反向']
 
-const openRepairs = computed(() => inspections.value.filter((i) => i.verdict === '返修' && !i.repairDone))
+const openRepairs = computed(() =>
+  inspections.value.filter((i) => i.verdict === '返修' && ['返修中', '待复验'].includes(i.repairStatus)))
 const scrapped = computed(() => inspections.value.filter((i) => i.verdict === '判废').length)
 
 async function load() {
@@ -31,27 +39,71 @@ async function load() {
 }
 
 async function create() {
+  if (busy.value) return
   error.value = ''; tip.value = ''
+  busy.value = true
   try {
     const payload = { ...form.value, order: { id: form.value.orderId } }
     const saved = await api.createInspection(payload)
-    tip.value = `已登记质检，结论「${saved.verdict}」`
+    tip.value = saved.verdict === '返修'
+      ? `已判返修（第 ${saved.repairRound} 轮），「${saved.stepName}」已置返修中`
+      : `已登记质检，结论「${saved.verdict}」`
     await load()
-  } catch (e) { error.value = e.message }
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busy.value = false
+  }
 }
 
-async function repair(id) {
+async function finishRepair(i) {
+  if (busyId.value) return
   error.value = ''; tip.value = ''
+  busyId.value = i.id
   try {
-    await api.repair(id)
-    tip.value = '返修已闭环'
+    // 服务端幂等：重复点击只会拿到同一条「待复验」记录，不会产生重复返修任务
+    await api.repair(i.id, form.value.repairOperator)
+    tip.value = `第 ${i.repairRound} 轮返修已完成，等待质检复验`
     await load()
-  } catch (e) { error.value = e.message }
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busyId.value = null
+  }
+}
+
+async function reinspect(i, passed) {
+  if (busyId.value) return
+  let note = ''
+  if (!passed) {
+    note = window.prompt(`复验不通过将开启第 ${(i.repairRound || 1) + 1} 轮返修，请填写不通过原因：`)
+    if (note === null) return
+    if (!note.trim()) { error.value = '复验不通过必须填写原因'; return }
+  }
+  error.value = ''; tip.value = ''
+  busyId.value = i.id
+  try {
+    const next = await api.reinspect(i.id, { passed, inspector: form.value.reinspector, note })
+    tip.value = passed
+      ? `第 ${i.repairRound} 轮复验通过，「${i.stepName}」已完成，返修闭环`
+      : `复验不通过，已自动开启第 ${next.repairRound} 轮返修，「${next.stepName}」保持返修中`
+    await load()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    busyId.value = null
+  }
 }
 
 function points(n) {
   const v = Math.min(Number(n) || 0, MAX_POINTS + 3)
-  return Array.from({ length: v }, (_, i) => i)
+  return Array.from({ length: v }, (_, idx) => idx)
+}
+
+// 旧数据兼容：历史返修记录没有 repairStatus，按 repairDone 还原展示
+function repairState(i) {
+  if (i.verdict !== '返修') return ''
+  return i.repairStatus || (i.repairDone ? '已闭环' : '返修中')
 }
 
 onMounted(load)
@@ -80,15 +132,20 @@ onMounted(load)
         </select>
         <input type="number" min="0" v-model.number="form.defectPoints" class="fld n" placeholder="不良点数" />
         <input type="number" min="1" v-model.number="form.sampleQty" class="fld n" placeholder="抽检板数" />
-        <input v-model="form.inspector" class="fld" style="width:96px" placeholder="检验员" />
-        <button class="act primary" @click="create">登记质检</button>
+        <input v-model="form.inspector" class="fld" style="width:96px" placeholder="质检员" />
+        <button class="act primary" :disabled="busy" @click="create">{{ busy ? '提交中…' : '登记质检' }}</button>
+      </div>
+      <div class="form-row" style="margin-top:8px">
+        <input v-model="form.repairOperator" class="fld" style="width:150px" placeholder="返修操作员" />
+        <input v-model="form.reinspector" class="fld" style="width:150px" placeholder="复验质检员" />
+        <span class="hint">返修流程：返修中（操作员完成返修）→ 待复验（质检员复验）→ 已闭环</span>
       </div>
     </div>
 
     <div class="panel">
       <div class="panel-head">
         <span class="panel-title">缺陷点阵</span>
-        <span class="panel-desc">一格一点，铺满即判废；返修需勾闭环</span>
+        <span class="panel-desc">一格一点，铺满即判废；返修必须经质检复验闭环</span>
       </div>
 
       <div class="stat-row">
@@ -102,7 +159,7 @@ onMounted(load)
           v-for="i in inspections"
           :key="i.id"
           class="insp-card"
-          :class="{ scrap: i.verdict === '判废', repair: i.verdict === '返修' }"
+          :class="{ scrap: i.verdict === '判废', repair: i.verdict === '返修' && repairState(i) !== '已闭环' }"
         >
           <div class="insp-top">
             <span class="i-no">{{ i.orderNo }}</span>
@@ -118,11 +175,29 @@ onMounted(load)
 
           <div class="insp-foot">
             <span>{{ i.defectPoints }} 点 / 抽检 {{ i.sampleQty }} 板 · {{ i.defectRate }}‰ · {{ i.inspector }}</span>
-            <label v-if="i.verdict === '返修'" class="close">
-              <input type="checkbox" :checked="i.repairDone" :disabled="i.repairDone" @change="repair(i.id)" />
-              闭环
-            </label>
-            <span v-else class="stamp">{{ i.verdict === '判废' ? '判废' : '合格' }}</span>
+            <span v-if="i.verdict === '返修' && i.repairRound > 0" class="round-tag">第 {{ i.repairRound }} 轮</span>
+            <span v-else-if="i.verdict !== '返修'" class="stamp">{{ i.verdict === '判废' ? '判废' : '合格' }}</span>
+          </div>
+
+          <!-- 返修闭环操作区 -->
+          <div v-if="i.verdict === '返修'" class="repair-bar">
+            <span class="rstate" :class="'rs-' + repairState(i)">{{ repairState(i) }}</span>
+
+            <template v-if="repairState(i) === '返修中'">
+              <button class="act small" :disabled="busyId === i.id" @click="finishRepair(i)">
+                {{ busyId === i.id ? '提交中…' : '完成返修' }}
+              </button>
+            </template>
+            <template v-else-if="repairState(i) === '待复验'">
+              <button class="act small ok" :disabled="busyId === i.id" @click="reinspect(i, true)">复验通过</button>
+              <button class="act small danger" :disabled="busyId === i.id" @click="reinspect(i, false)">复验不通过</button>
+            </template>
+            <template v-else-if="repairState(i) === '复验不合格'">
+              <span class="rnote">复验不通过，已由第 {{ (i.repairRound || 1) + 1 }} 轮返修接棒</span>
+            </template>
+            <template v-else-if="repairState(i) === '已闭环'">
+              <span class="rnote">复验人：{{ i.reinspectedBy || '—' }}</span>
+            </template>
           </div>
         </div>
       </div>
@@ -132,8 +207,9 @@ onMounted(load)
 
 <style scoped>
 .form-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.hint { font-size: 12px; color: var(--muted); }
 
-.insp-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.insp-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
 
 .insp-card {
   border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #fff;
@@ -163,6 +239,21 @@ onMounted(load)
 .no-defect { font-size: 12px; color: #2e7d32; font-weight: 700; }
 
 .insp-foot { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
-.insp-foot .stamp { margin-left: auto; font-weight: 800; color: var(--primary-deep); }
-.insp-foot .close { margin-left: auto; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.insp-foot .stamp, .insp-foot .round-tag { margin-left: auto; font-weight: 800; color: var(--primary-deep); }
+.insp-foot .round-tag { color: #e65100; }
+
+.repair-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rstate {
+  font-size: 11px; font-weight: 800; padding: 1px 8px; border-radius: 9px;
+  background: #ffe0b2; color: #e65100;
+}
+.rstate.rs-待复验 { background: #fff3cd; color: #8a6d3b; }
+.rstate.rs-已闭环 { background: #c8e6c9; color: #2e7d32; }
+.rstate.rs-复验不合格 { background: #ffcdd2; color: #b71c1c; }
+.rnote { font-size: 11px; color: var(--muted); }
+
+.act.small { padding: 3px 10px; font-size: 12px; }
+.act.ok { background: #2e7d32; color: #fff; border-color: #2e7d32; }
+.act.danger { background: #c62828; color: #fff; border-color: #c62828; }
+.act:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>

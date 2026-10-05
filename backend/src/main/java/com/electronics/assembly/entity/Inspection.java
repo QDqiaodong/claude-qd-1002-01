@@ -4,6 +4,8 @@ import java.time.LocalDateTime;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 
+import com.electronics.assembly.common.Dict;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -12,6 +14,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.PostLoad;
 import jakarta.persistence.Table;
 import jakarta.persistence.Transient;
 import lombok.Getter;
@@ -22,6 +25,11 @@ import lombok.Setter;
  *
  * <p>不良点数超过阈值自动判废，有缺陷但未超阈值判返修，无缺陷判合格；
  * 判返修的必须走完返修闭环（repairDone）才能放行。</p>
+ *
+ * <p>返修闭环：登记返修质检（第 N 轮）→ 对应工序游标置「返修中」→ 操作员完成返修，
+ * 记录转为「待复验」→ 只能由质检员复验：通过则闭环（repairDone=true，工序置「已完成」），
+ * 不通过则自动以「下一轮返修」重新建返修任务（repairRound +1），游标保持返修中。
+ * 同一工单同一工序同一轮次由数据库唯一键（repair_uk 生成列）保证只有一条返修记录。</p>
  */
 @Entity
 @Table(name = "inspection")
@@ -61,17 +69,68 @@ public class Inspection {
     @Column(name = "inspector", length = 32)
     private String inspector;
 
-    /** 返修是否闭环 */
+    /** 返修是否闭环（旧字段：仅复验通过才置 true，保留兼容旧接口响应） */
     @Column(name = "repair_done", nullable = false)
     private Boolean repairDone;
 
     @Column(name = "checked_at")
     private LocalDateTime checkedAt;
 
+    /** 返修轮次：返修记录从 1 起按工单+工序递增；合格 / 判废为 0 */
+    @Column(name = "repair_round", nullable = false)
+    private Integer repairRound = 0;
+
+    /** 无 / 返修中 / 待复验 / 复验不合格 / 已闭环 */
+    @Column(name = "repair_status", nullable = false, length = 16)
+    private String repairStatus = Dict.REPAIR_NA;
+
+    /** 完成返修的操作员 */
+    @Column(name = "repaired_by", length = 32)
+    private String repairedBy;
+
+    @Column(name = "repaired_at")
+    private LocalDateTime repairedAt;
+
+    /** 复验质检员（复验只能由质检员推进） */
+    @Column(name = "reinspected_by", length = 32)
+    private String reinspectedBy;
+
+    @Column(name = "reinspected_at")
+    private LocalDateTime reinspectedAt;
+
+    /** 复验备注：不通过时必填 */
+    @Column(name = "reinspect_note")
+    private String reinspectNote;
+
     /** 所属工单号，派生字段 */
     @Transient
     public String getOrderNo() {
         return order == null ? null : order.getOrderNo();
+    }
+
+    /**
+     * 兼容历史质检数据：repair_status 列为后加列，旧库读出来可能为 NULL 或占位值「无」，
+     * 此时按旧口径（verdict + repair_done）归一化，不改库（避免老数据被动脏写）。
+     */
+    @PostLoad
+    void normalizeLegacyFields() {
+        if (repairRound == null) {
+            repairRound = 0;
+        }
+        if (repairStatus == null || repairStatus.isBlank()) {
+            repairStatus = normalizeLegacyRepairStatus();
+        } else if (Dict.REPAIR_NA.equals(repairStatus) && "返修".equals(verdict)) {
+            // 旧库返修记录：新列存在但没回填（DDL 默认值 '无'），用旧字段还原状态机口径
+            repairStatus = normalizeLegacyRepairStatus();
+        }
+    }
+
+    /** 旧库只靠 verdict + repair_done 表达返修状态，这里还原成新状态机口径 */
+    private String normalizeLegacyRepairStatus() {
+        if (!"返修".equals(verdict)) {
+            return Dict.REPAIR_NA;
+        }
+        return Boolean.TRUE.equals(repairDone) ? Dict.REPAIR_CLOSED : Dict.REPAIR_OPEN;
     }
 
     /** 缺陷率（‰），派生字段：不良点数 / 抽检板数 */

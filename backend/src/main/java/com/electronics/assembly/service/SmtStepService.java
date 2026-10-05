@@ -45,12 +45,20 @@ public class SmtStepService {
                 .orElseThrow(() -> new BizException("工序记录不存在：" + id));
     }
 
+    /** 加锁重读工序游标：与质检判返修 / 复验推进游标的写操作串行化 */
+    private SmtStep reloadLocked(Long id) {
+        SmtStep probe = get(id);
+        return stepRepository.findByOrderIdAndStepNameForUpdate(
+                probe.getOrder().getId(), probe.getStepName())
+                .orElseThrow(() -> new BizException("工序记录不存在：" + id));
+    }
+
     /**
      * 开始某道工序。
      */
     @Transactional
     public SmtStep start(Long id, String operator) {
-        SmtStep step = get(id);
+        SmtStep step = reloadLocked(id);
         // 规则①：前序工序必须已完成
         int idx = Dict.stepIndex(step.getStepName());
         if (idx < 0) {
@@ -66,6 +74,10 @@ public class SmtStepService {
             }
         }
         if (!Dict.canTransferStep(step.getStatus(), "进行中")) {
+            if (Dict.REPAIR_OPEN.equals(step.getStatus())) {
+                throw new BizException("工序「" + step.getStepName()
+                        + "」处于返修中，必须由质检员复验通过后才能继续，不能自行开工");
+            }
             throw new BizException("工序「" + step.getStepName() + "」当前为「" + step.getStatus() + "」，不能开工");
         }
         // 规则④：换线批次未放行时，阻止工单从上料推进到贴片
@@ -79,7 +91,12 @@ public class SmtStepService {
     /** 完成工序 */
     @Transactional
     public SmtStep finish(Long id) {
-        SmtStep step = get(id);
+        SmtStep step = reloadLocked(id);
+        // 返修中只能由质检复验推进到已完成，普通完工不能绕过复验
+        if (Dict.REPAIR_OPEN.equals(step.getStatus())) {
+            throw new BizException("工序「" + step.getStepName()
+                    + "」处于返修中，必须由质检员复验通过后才能完成，不能自行完工");
+        }
         if (!Dict.canTransferStep(step.getStatus(), "已完成")) {
             throw new BizException("只有「进行中」的工序能完工，当前状态：" + step.getStatus());
         }
@@ -93,7 +110,7 @@ public class SmtStepService {
     /** 退回待执行（进行中可退） */
     @Transactional
     public SmtStep reset(Long id) {
-        SmtStep step = get(id);
+        SmtStep step = reloadLocked(id);
         if (!Dict.canTransferStep(step.getStatus(), "待执行")) {
             throw new BizException("只有「进行中」的工序能退回，当前状态：" + step.getStatus());
         }

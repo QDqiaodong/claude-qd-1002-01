@@ -17,6 +17,10 @@ ENV MYSQL_DATABASE=${MYSQL_DATABASE} \
 
 COPY schema.sql /docker-entrypoint-initdb.d/01-schema.sql
 
+# 存量库迁移脚本随镜像保留（新库由 schema.sql 直接建成最新结构，无需执行）：
+# 已在运行的旧版本实例用 `docker exec <mysql> mysql -uroot -p<pwd> electronics_assembly < /migration/V2__repair_loop.sql` 升级
+COPY migration/ /migration/
+
 RUN set -eux; \
     /entrypoint.sh mysqld --skip-log-bin --performance-schema=OFF & \
     pid=$!; \

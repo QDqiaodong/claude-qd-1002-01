@@ -1,0 +1,18 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:ea_test;MODE=MySQL;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=10000
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  sql:
+    init:
+      mode: always
+      # 显式指定 H2 版结构，避免 Spring Boot 自动拾取 main 资源里的 MySQL 版 schema.sql
+      schema-locations: classpath:schema-h2.sql
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect

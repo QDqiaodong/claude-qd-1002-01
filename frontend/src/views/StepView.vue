@@ -36,6 +36,15 @@ const cursor = computed(() => {
 
 const doneCount = computed(() => STEPS.filter((n) => stepMap.value[n] && stepMap.value[n].status === '已完成').length)
 
+// 返修中的工序：未完成返修，不能跳过，也不能自行开工/完工
+const repairStep = computed(() => {
+  for (const name of STEPS) {
+    const s = stepMap.value[name]
+    if (s && s.status === '返修中') return s
+  }
+  return null
+})
+
 async function load() {
   error.value = ''
   try {
@@ -56,6 +65,11 @@ async function loadSteps() {
 async function act(name, kind) {
   const s = stepMap.value[name]
   if (!s) { error.value = `工单还没有「${name}」这道工序，请先投产`; return }
+  // 返修中节点只能由质检复验推进，页面操作直接拦掉并给出明确提示
+  if (s.status === '返修中') {
+    error.value = `「${name}」处于返修中（第 ${s.repairRound || 1} 轮），须到「质检」页完成返修并经质检复验通过后才能继续，不能自行开工/完工/跳过`
+    return
+  }
   error.value = ''; tip.value = ''
   try {
     if (kind === 'start') await api.startStep(s.id, operator.value)
@@ -87,6 +101,11 @@ onMounted(load)
         到「换线首件」页完成首件确认后才能恢复。
       </div>
 
+      <div v-if="repairStep" class="repair-banner">
+        「{{ repairStep.stepName }}」第 {{ repairStep.repairRound || 1 }} 轮返修未闭环，游标停在返修中 ——
+        后续工序不能开工，须到「质检」页由操作员完成返修、质检员复验通过后才能继续。
+      </div>
+
       <div class="stat-row">
         <div class="stat"><div class="k">已完成工序</div><div class="v">{{ doneCount }} / {{ STEPS.length }}</div></div>
         <div class="stat"><div class="k">游标位置</div><div class="v">{{ cursor || '全部完成' }}</div></div>
@@ -112,12 +131,15 @@ onMounted(load)
               stepMap[name] ? 'st-' + stepMap[name].status : 'st-none',
               { cursor: cursor === name }
             ]"
-            @click="act(name, stepMap[name] && stepMap[name].status === '已完成' ? 'reset' : (stepMap[name] && stepMap[name].status === '进行中' ? 'finish' : 'start'))"
+            @click="act(name, stepMap[name] && stepMap[name].status === '返修中' ? 'repair' : (stepMap[name] && stepMap[name].status === '已完成' ? 'reset' : (stepMap[name] && stepMap[name].status === '进行中' ? 'finish' : 'start')))"
           >
             <span class="node-i">{{ i + 1 }}</span>
           </div>
           <div class="node-name">{{ name }}</div>
-          <div class="node-state">{{ stepMap[name] ? stepMap[name].status : '未建立' }}</div>
+          <div class="node-state">
+            {{ stepMap[name] ? stepMap[name].status : '未建立' }}
+            <template v-if="stepMap[name] && stepMap[name].status === '返修中'">· 第 {{ stepMap[name].repairRound || 1 }} 轮</template>
+          </div>
           <div class="node-op">{{ stepMap[name] && stepMap[name].operator ? stepMap[name].operator : '—' }}</div>
         </div>
       </div>
@@ -159,16 +181,26 @@ onMounted(load)
   border-color: var(--primary-soft); color: var(--primary-deep);
   animation: pulse 1.4s infinite;
 }
+.node.st-返修中 {
+  border-color: #ef6c00; background: #fff3e0; color: #e65100;
+  animation: repairpulse 1.4s infinite;
+}
 .node.st-已完成 {
   border-color: var(--primary); background: var(--primary); color: #fff;
 }
 .node.st-none { border-style: dashed; opacity: 0.5; }
 
 .node.cursor { box-shadow: 0 0 0 4px var(--primary-wash); }
+.node.st-返修中.cursor { box-shadow: 0 0 0 4px #ffe0b2; }
 
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(63, 81, 181, 0.4); }
   50% { box-shadow: 0 0 0 8px rgba(63, 81, 181, 0); }
+}
+
+@keyframes repairpulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 108, 0, 0.45); }
+  50% { box-shadow: 0 0 0 8px rgba(239, 108, 0, 0); }
 }
 
 .node-name { font-size: 13px; font-weight: 800; color: var(--primary-deep); margin-top: 4px; }
@@ -179,6 +211,11 @@ onMounted(load)
 
 .lc-banner {
   border: 1px solid #f5c6c2; background: #fdecea; color: #a32b20;
+  padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 13px; font-weight: 700;
+}
+
+.repair-banner {
+  border: 1px solid #ffcc80; background: #fff3e0; color: #e65100;
   padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 13px; font-weight: 700;
 }
 </style>
