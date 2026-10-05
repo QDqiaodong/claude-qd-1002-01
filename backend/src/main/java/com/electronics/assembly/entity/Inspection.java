@@ -61,7 +61,14 @@ public class Inspection {
     @Column(name = "inspector", length = 32)
     private String inspector;
 
-    /** 返修是否闭环 */
+    /**
+     * 前端生成的提交幂等号（UUID）。同号重复提交（双击 / 网络重试）幂等返回首条记录，
+     * 不会产生第二条质检与第二个返修任务；历史数据为 NULL。唯一索引兜底。
+     */
+    @Column(name = "request_id", length = 64, unique = true)
+    private String requestId;
+
+    /** 返修是否闭环（旧字段：返修经质检复验通过即置 true，语义保持向后兼容） */
     @Column(name = "repair_done", nullable = false)
     private Boolean repairDone;
 

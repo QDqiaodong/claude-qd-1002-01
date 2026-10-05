@@ -36,6 +36,10 @@ const cursor = computed(() => {
 
 const doneCount = computed(() => STEPS.filter((n) => stepMap.value[n] && stepMap.value[n].status === '已完成').length)
 
+// 返修中工序（游标回炉停线）
+const repairingSteps = computed(() =>
+  STEPS.filter((n) => stepMap.value[n] && stepMap.value[n].status === '返修中'))
+
 async function load() {
   error.value = ''
   try {
@@ -56,6 +60,11 @@ async function loadSteps() {
 async function act(name, kind) {
   const s = stepMap.value[name]
   if (!s) { error.value = `工单还没有「${name}」这道工序，请先投产`; return }
+  // 返修中是闭环游标：只能由质检复验推进，节点上直接给出引导，不发任何写请求
+  if (s.status === '返修中') {
+    error.value = `工序「${name}」返修中：返修工完工后必须由质检员复验通过才能恢复，请到「质检与返修」页处理`
+    return
+  }
   error.value = ''; tip.value = ''
   try {
     if (kind === 'start') await api.startStep(s.id, operator.value)
@@ -87,6 +96,11 @@ onMounted(load)
         到「换线首件」页完成首件确认后才能恢复。
       </div>
 
+      <div v-if="repairingSteps.length" class="rp-banner">
+        工序返修中：{{ repairingSteps.join('、') }} —— 返修工完工后须经质检员复验通过才能恢复，
+        返修闭环未完成前该工序不能开工、完工或跳过。请到「质检与返修」页处理。
+      </div>
+
       <div class="stat-row">
         <div class="stat"><div class="k">已完成工序</div><div class="v">{{ doneCount }} / {{ STEPS.length }}</div></div>
         <div class="stat"><div class="k">游标位置</div><div class="v">{{ cursor || '全部完成' }}</div></div>
@@ -110,7 +124,7 @@ onMounted(load)
             class="node"
             :class="[
               stepMap[name] ? 'st-' + stepMap[name].status : 'st-none',
-              { cursor: cursor === name }
+              { cursor: cursor === name, repairing: stepMap[name] && stepMap[name].status === '返修中' }
             ]"
             @click="act(name, stepMap[name] && stepMap[name].status === '已完成' ? 'reset' : (stepMap[name] && stepMap[name].status === '进行中' ? 'finish' : 'start'))"
           >
@@ -122,7 +136,7 @@ onMounted(load)
         </div>
       </div>
 
-      <div class="note">灰色空心 = 待执行／未建立；蓝闪 = 进行中；墨蓝实心 = 已完成。点已完成的节点可退回。</div>
+      <div class="note">灰色空心 = 待执行／未建立；蓝闪 = 进行中；橙色呼吸 = 返修中（仅质检复验可解除）；墨蓝实心 = 已完成。</div>
     </div>
   </div>
 </template>
@@ -159,16 +173,26 @@ onMounted(load)
   border-color: var(--primary-soft); color: var(--primary-deep);
   animation: pulse 1.4s infinite;
 }
+.node.st-返修中 {
+  border-color: #ef6c00; background: #ef6c00; color: #fff;
+  animation: repairPulse 1.4s infinite;
+}
 .node.st-已完成 {
   border-color: var(--primary); background: var(--primary); color: #fff;
 }
 .node.st-none { border-style: dashed; opacity: 0.5; }
 
 .node.cursor { box-shadow: 0 0 0 4px var(--primary-wash); }
+.node.repairing { box-shadow: 0 0 0 4px #ffe0b2; }
 
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(63, 81, 181, 0.4); }
   50% { box-shadow: 0 0 0 8px rgba(63, 81, 181, 0); }
+}
+
+@keyframes repairPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 108, 0, 0.45); }
+  50% { box-shadow: 0 0 0 9px rgba(239, 108, 0, 0); }
 }
 
 .node-name { font-size: 13px; font-weight: 800; color: var(--primary-deep); margin-top: 4px; }
@@ -179,6 +203,11 @@ onMounted(load)
 
 .lc-banner {
   border: 1px solid #f5c6c2; background: #fdecea; color: #a32b20;
+  padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 13px; font-weight: 700;
+}
+
+.rp-banner {
+  border: 1px solid #ffcc80; background: #fff3e0; color: #e65100;
   padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 13px; font-weight: 700;
 }
 </style>

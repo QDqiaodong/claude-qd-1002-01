@@ -43,11 +43,13 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 唯一约束冲突：400（避免在页面上抛出非人话的外键报错）
+     * 唯一约束冲突：400。并发/重试撞唯一索引（如幂等号、同工单同工序在制返修唯一索引）
+     * 时给出可重试的人话提示，而不是外键/堆栈原文。
      */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleIntegrity(DataIntegrityViolationException e) {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.fail("存在唯一性约束冲突，请检查编号、手机号是否重复"));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.fail("数据冲突：可能是重复提交或同工单同工序已存在在制返修任务，请刷新后重试"));
     }
 
     /**

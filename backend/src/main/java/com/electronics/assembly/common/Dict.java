@@ -35,11 +35,17 @@ public final class Dict {
     // ---------------- SMT 工序 ----------------
     public static final List<String> STEPS = List.of("上料", "贴片", "回流焊", "AOI", "目检");
 
-    public static final List<String> STEP_STATUSES = List.of("待执行", "进行中", "已完成");
+    /**
+     * 工序状态：待执行 / 进行中 / 已完成，外加返修闭环专用的「返修中」游标。
+     * 返修中由「质检不合格 → 建返修任务」自动置上，只能由质检复验推进到「已完成」。
+     */
+    public static final List<String> STEP_STATUSES = List.of("待执行", "进行中", "已完成", "返修中");
 
     private static final Map<String, List<String>> STEP_NEXT = Map.of(
             "待执行", List.of("进行中"),
             "进行中", List.of("已完成", "待执行"),
+            // 返修中是闭环游标：只进不出，且只能经质检复验置为已完成（走 recheck 通道，不经常规流转）
+            "返修中", List.of(),
             "已完成", List.of());
 
     // ---------------- 质检与返修 ----------------
@@ -47,6 +53,14 @@ public final class Dict {
 
     /** 判定结论：合格 / 返修 / 判废 */
     public static final List<String> VERDICTS = List.of("合格", "返修", "判废");
+
+    // ---------------- 返修任务 ----------------
+    /** 返修任务状态：待返修（已建任务等返修工）→ 待复验（返修完成等质检员）→ 已复验通过（终态） */
+    public static final List<String> REPAIR_STATUSES = List.of("待返修", "待复验", "已复验通过");
+
+    public static boolean isValidRepairStatus(String status) {
+        return status != null && REPAIR_STATUSES.contains(status);
+    }
 
     // ---------------- 换线首件放行 ----------------
     /** 换线批次状态：待首件 → 待确认 → 已放行 / 已驳回；已失效为旁路终态 */

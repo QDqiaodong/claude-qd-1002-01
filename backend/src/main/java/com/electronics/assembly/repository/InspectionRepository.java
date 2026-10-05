@@ -1,6 +1,7 @@
 package com.electronics.assembly.repository;
 
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 
@@ -16,4 +17,7 @@ public interface InspectionRepository extends JpaRepository<Inspection, Long> {
     List<Inspection> findByVerdictAndRepairDone(String verdict, Boolean repairDone);
 
     List<Inspection> findByOrderIdAndStepName(Long orderId, String stepName);
+
+    /** 提交幂等号：同号重复提交（双击 / 网络重试）返回首次登记的质检记录 */
+    Optional<Inspection> findByRequestId(String requestId);
 }

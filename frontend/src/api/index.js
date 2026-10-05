@@ -62,7 +62,17 @@ export default {
   // ---------------- 质检与返修 ----------------
   listInspections: (p) => call(http.get('/inspections', params(p))),
   createInspection: (d) => call(http.post('/inspections', d)),
-  repair: (id) => call(http.post(`/inspections/${id}/repair`)),
+  // 旧接口保留：语义为返修工完工上报（转待复验），空体/带体都可，重复点击幂等
+  repair: (id, d) => call(http.post(`/inspections/${id}/repair`, d || {})),
   openRepairs: () => call(http.get('/inspections/open-repairs')),
-  blocking: (orderId) => call(http.get(`/inspections/blocking/${orderId}`))
+  blocking: (orderId) => call(http.get(`/inspections/blocking/${orderId}`)),
+
+  // ---------------- 返修任务（闭环：返修工完工 → 质检员复验） ----------------
+  listRepairTasks: (p) => call(http.get('/repair-tasks', params(p))),
+  openRepairTasks: () => call(http.get('/repair-tasks/open')),
+  getRepairTask: (id) => call(http.get(`/repair-tasks/${id}`)),
+  repairTaskByInspection: (inspectionId) => call(http.get(`/repair-tasks/by-inspection/${inspectionId}`)),
+  completeRepairTask: (id, d) => call(http.post(`/repair-tasks/${id}/complete`, d || {})),
+  // 质检员复验：result 合格 → 闭环+工序已完成；不合格 → 返修轮次 +1
+  recheckRepairTask: (id, d) => call(http.post(`/repair-tasks/${id}/recheck`, d))
 }

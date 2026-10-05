@@ -35,15 +35,18 @@ public class WorkOrderService {
     private final BomItemRepository bomRepository;
     private final SmtStepRepository stepRepository;
     private final OrderLineConfigRepository configRepository;
+    private final RepairTaskService repairTaskService;
 
     public WorkOrderService(WorkOrderRepository orderRepository,
                             BomItemRepository bomRepository,
                             SmtStepRepository stepRepository,
-                            OrderLineConfigRepository configRepository) {
+                            OrderLineConfigRepository configRepository,
+                            RepairTaskService repairTaskService) {
         this.orderRepository = orderRepository;
         this.bomRepository = bomRepository;
         this.stepRepository = stepRepository;
         this.configRepository = configRepository;
+        this.repairTaskService = repairTaskService;
     }
 
     public List<WorkOrder> list(String status, String productModel) {
@@ -234,6 +237,12 @@ public class WorkOrderService {
         }
         if ("已完成".equals(target) && order.getGapQty() > 0) {
             throw new BizException("还欠 " + order.getGapQty() + " 板未完成，不能置为已完成");
+        }
+        // 返修闭环未走完不能推进：有未复验通过的返修任务时不能把工单往前转
+        int openRepairs = repairTaskService.countOpenByOrder(id);
+        if (openRepairs > 0 && ("待检验".equals(target) || "已完成".equals(target))) {
+            throw new BizException("工单还有 " + openRepairs
+                    + " 个返修任务未复验闭环，必须经质检员复验通过后才能推进到「" + target + "」");
         }
         order.setStatus(target);
         return orderRepository.save(order);

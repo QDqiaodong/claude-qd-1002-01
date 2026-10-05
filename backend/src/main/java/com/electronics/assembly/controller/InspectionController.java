@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.electronics.assembly.common.ApiResponse;
+import com.electronics.assembly.dto.RepairTaskRequest;
 import com.electronics.assembly.entity.Inspection;
 import com.electronics.assembly.service.InspectionService;
 
@@ -43,10 +44,15 @@ public class InspectionController {
         return ApiResponse.success("质检已登记", inspectionService.create(input));
     }
 
-    /** 返修闭环 */
+    /**
+     * 返修工完工上报（旧「返修闭环」接口，响应仍是 Inspection，向后兼容）。
+     * 完工后状态为「待复验」，必须再由质检员 POST /api/repair-tasks/{id}/recheck 复验。
+     * 空体可调用，重复点击 / 网络重试幂等。
+     */
     @PostMapping("/{id}/repair")
-    public ApiResponse<Inspection> repair(@PathVariable Long id) {
-        return ApiResponse.success("返修已闭环", inspectionService.repair(id));
+    public ApiResponse<Inspection> repair(@PathVariable Long id,
+                                          @RequestBody(required = false) RepairTaskRequest req) {
+        return ApiResponse.success("返修已完工，等待质检员复验", inspectionService.repair(id, req));
     }
 
     /** 未闭环的返修单 */

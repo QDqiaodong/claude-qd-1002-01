@@ -15,6 +15,8 @@ CREATE DATABASE IF NOT EXISTS electronics_assembly
 USE electronics_assembly;
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS repair_event;
+DROP TABLE IF EXISTS repair_task;
 DROP TABLE IF EXISTS line_change_event;
 DROP TABLE IF EXISTS line_change_batch;
 DROP TABLE IF EXISTS order_line_config;
@@ -63,7 +65,7 @@ CREATE TABLE smt_step (
     id          BIGINT AUTO_INCREMENT PRIMARY KEY,
     order_id    BIGINT      NOT NULL,
     step_name   VARCHAR(16) NOT NULL COMMENT '上料/贴片/回流焊/AOI/目检',
-    status      VARCHAR(16) NOT NULL COMMENT '待执行/进行中/已完成',
+    status      VARCHAR(16) NOT NULL COMMENT '待执行/进行中/已完成/返修中',
     operator    VARCHAR(32),
     started_at  DATETIME,
     finished_at DATETIME,
@@ -80,9 +82,51 @@ CREATE TABLE inspection (
     sample_qty    INT         NOT NULL DEFAULT 0 COMMENT '抽检板数',
     verdict       VARCHAR(16) NOT NULL COMMENT '合格/返修/判废',
     inspector     VARCHAR(32),
-    repair_done   TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '返修是否闭环',
+    request_id    VARCHAR(64)          COMMENT '提交幂等号：同号重放返回首条，历史数据为 NULL',
+    repair_done   TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '返修是否闭环（复验通过置 1）',
     checked_at    DATETIME,
-    CONSTRAINT fk_insp_order FOREIGN KEY (order_id) REFERENCES work_order (id)
+    CONSTRAINT fk_insp_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    UNIQUE KEY uk_insp_request (request_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修任务（质检不合格 → 返修 → 复验闭环） ----------------
+CREATE TABLE repair_task (
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id            BIGINT      NOT NULL,
+    inspection_id       BIGINT      NOT NULL COMMENT '触发任务的质检记录，一条质检最多一个返修任务',
+    step_name           VARCHAR(16) NOT NULL COMMENT '返修发生的工序',
+    round_no            INT         NOT NULL DEFAULT 1 COMMENT '返修轮次：复验不通过 +1',
+    status              VARCHAR(16) NOT NULL COMMENT '待返修/待复验/已复验通过',
+    repair_by           VARCHAR(32) COMMENT '最近一轮返修人',
+    repair_note         VARCHAR(255),
+    repaired_at         DATETIME,
+    rechecked_by        VARCHAR(32) COMMENT '复验质检员（闭环只能由质检员推进）',
+    last_recheck_result VARCHAR(16) COMMENT '最近一次复验结论：合格/不合格',
+    rechecked_at        DATETIME,
+    created_at          DATETIME,
+    -- 未闭环占位列：任务未复验通过时等于 order_id / step_name，否则 NULL。
+    -- 配合唯一索引，数据库层面保证「同工单同工序同时只有一个未闭环返修任务」，
+    -- 不同工单的 order_id 不同，天然不可能串单；重复点击/并发提交由它兜底。
+    active_order_id     BIGINT GENERATED ALWAYS AS (IF(status <> '已复验通过', order_id, NULL)) STORED
+                        COMMENT '未闭环占位：同工单同工序唯一',
+    active_step_name    VARCHAR(16) GENERATED ALWAYS AS (IF(status <> '已复验通过', step_name, NULL)) STORED
+                        COMMENT '未闭环工序占位：同工单同工序唯一',
+    CONSTRAINT fk_rt_order FOREIGN KEY (order_id) REFERENCES work_order (id),
+    CONSTRAINT fk_rt_inspection FOREIGN KEY (inspection_id) REFERENCES inspection (id),
+    UNIQUE KEY uk_rt_inspection (inspection_id),
+    UNIQUE KEY uk_rt_open (active_order_id, active_step_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------- 返修处理记录（按轮次完整审计链） ----------------
+CREATE TABLE repair_event (
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+    task_id    BIGINT      NOT NULL,
+    action     VARCHAR(16) NOT NULL COMMENT '建任务/返修完成/复验通过/复验不通过',
+    round_no   INT         NOT NULL COMMENT '记录产生时的返修轮次',
+    actor      VARCHAR(32) NOT NULL,
+    detail     VARCHAR(255),
+    created_at DATETIME,
+    CONSTRAINT fk_re_task FOREIGN KEY (task_id) REFERENCES repair_task (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------- 工单当前产线配置（换线比对基准 + 并发锁定点） ----------------
